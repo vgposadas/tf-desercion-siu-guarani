@@ -1,0 +1,12 @@
+datos/
+*.csv
+*.joblib
+resultados/
+resultados_06/
+*.png
+config_local.py
+.env
+.venv/
+venv/
+__pycache__/
+.ipynb_checkpoints/
