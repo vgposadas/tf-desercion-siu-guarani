@@ -1,0 +1,107 @@
+-- Anexo Q.3: consultas y fórmulas del tablero (texto tal como figura en la tesis)
+
+Q.3 Consultas y fórmulas del tablero
+Estas consultas y fórmulas preparan los datos del tablero de Power BI descripto en el apartado 4.2.6. A diferencia de las anteriores, se ejecutaron sobre la base de datos de trabajo (esquema tesis), no sobre SIU Guarani. El tablero se conecta a esa base en modo importación y toma la vista y las dos tablas de este apartado; los cálculos que deben responder a los filtros se hacen dentro de Power BI con las fórmulas de la sección Q.3.D.
+
+Consulta Q.3.A. Vista con una fila por estudiante (pbi_estudiantes)
+Finalidad: Reunir en una fila por estudiante los datos que usa el tablero: cohorte, sede con los nombres anonimizados, deserción en el primer año, tiempo y evento del análisis de supervivencia (solo para quienes completaron el primer año), perfil e indicadores del primer año. Una vista es una consulta guardada en la base de datos: no copia los datos, sino que los toma de las tablas cada vez que se consulta. En este anexo, el nombre de la localidad de la Sede del interior se reemplaza por el marcador NOMBRE_SEDE_INTERIOR.
+
+CREATE OR REPLACE VIEW tesis.pbi_estudiantes AS
+SELECT t.id_est,
+       t.cohorte,
+       CASE WHEN t.sede_ingreso = 'NOMBRE_SEDE_INTERIOR' THEN 'Sede del interior'
+            ELSE 'Sede Central' END AS sede,
+       t.deserta_1er_anio::int AS deserta_1er_anio,
+       CASE WHEN t.grupo = 'modelo' THEN t.tiempo END AS tiempo,
+       CASE WHEN t.grupo = 'modelo' THEN t.evento END AS evento,
+       g.grupo_km,
+       g.perfil,
+       i.materias_cursadas,
+       i.prop_ausentes,
+       i.materias_aprobadas
+FROM tesis.trayectorias t
+LEFT JOIN tesis.grupos g ON g.id_est = t.id_est
+LEFT JOIN tesis.indicadores i ON i.id_est = t.id_est AND i.incluido;
+Resultado: 1.987 filas (1.497 de la Sede Central y 490 de la Sede del interior); 985 con tiempo y evento, y 978 con perfil.
+
+Consulta Q.3.B. Tabla de factores (pbi_factores)
+Finalidad: Guardar los resultados de la regresión de Cox (Tabla 4.14) para mostrarlos en el tablero. Las filas se cargaron a mano con los valores redondeados de esa tabla. Los números se guardan como texto con coma decimal, para que el tablero los muestre igual que la tesis, y la columna lectura explica cada resultado en lenguaje simple.
+CREATE TABLE tesis.pbi_factores (
+    orden    integer,
+    variable text,
+    hr       text,
+    ic95     text,
+    p        text,
+    lectura  text
+);
+Resultado: 7 filas, una por cada variable del modelo.
+
+Consulta Q.3.C. Tabla de la sede por tramo (pbi_sede_tramos)
+Finalidad: Guardar la razón de riesgos de la Sede del interior en cada tramo del modelo extendido (Tabla 4.15) para el gráfico del tablero. Las filas se cargaron a mano con los valores de esa tabla, redondeados a dos decimales.
+CREATE TABLE tesis.pbi_sede_tramos (
+    orden   integer,
+    tramo   text,
+    periodo text,
+    hr      numeric(4,2),
+    ic_inf  numeric(4,2),
+    ic_sup  numeric(4,2),
+    p       text,
+    lectura text
+);
+
+Resultado: 3 filas (tramos de 1 a 3, de 4 a 6 y de 7 a 20 cuatrimestres), con razones de riesgo de 1,45, 2,43 y 1,09.
+Fórmulas Q.3.D. Medidas y tablas auxiliares del tablero (DAX)
+Finalidad: Calcular dentro del tablero los indicadores y la curva de Kaplan-Meier, para que cambien al aplicar filtros. Se escriben en DAX, el lenguaje de fórmulas de Power BI. Tiempos y PuntosCurva son tablas auxiliares: la primera lista los cuatrimestres de 0 a 20, y la segunda agrega un punto justo antes de cada cuatrimestre para que la curva se dibuje en escalones. Las medidas cuentan estudiantes y desertores y calculan los porcentajes. La medida Permanencia aplica el estimador de Kaplan-Meier: en cada cuatrimestre calcula la proporción de estudiantes en riesgo que no desertan y multiplica esas proporciones hasta el cuatrimestre elegido. Las medidas terminadas en «(tarjeta)» solo muestran el número con punto de miles en las tarjetas.
+Tablas auxiliares:
+Tiempos = SELECTCOLUMNS(GENERATESERIES(0, 20, 1), "t", [Value])
+ 
+PuntosCurva =
+UNION(
+    SELECTCOLUMNS(GENERATESERIES(0, 20, 1), "x", [Value], "t", [Value]),
+    SELECTCOLUMNS(GENERATESERIES(1, 20, 1), "x", [Value] - 0.001, "t", [Value] - 1)
+)
+Medidas (tabla Estudiantes):
+Estudiantes total = COUNTROWS(Estudiantes)
+Desertores 1.er año = SUM(Estudiantes[deserta_1er_anio])
+% deserción 1.er año = DIVIDE([Desertores 1.er año], [Estudiantes total])
+Estudiantes modelo = COUNT(Estudiantes[tiempo])
+Desertores modelo = SUM(Estudiantes[evento])
+% deserción modelo = DIVIDE([Desertores modelo], [Estudiantes modelo])
+ 
+Permanencia =
+VAR tActual = SELECTEDVALUE(Tiempos[t])
+VAR quedan =
+    CALCULATE(COUNTROWS(Estudiantes),
+              Estudiantes[tiempo] >= tActual, NOT ISBLANK(Estudiantes[tiempo]))
+RETURN
+IF(ISBLANK(tActual) || quedan = 0, BLANK(),
+    PRODUCTX(
+        FILTER(ALL(Tiempos[t]), Tiempos[t] <= tActual),
+        VAR tk = Tiempos[t]
+        VAR enRiesgo =
+            CALCULATE(COUNTROWS(Estudiantes),
+                      Estudiantes[tiempo] >= tk, NOT ISBLANK(Estudiantes[tiempo]))
+        VAR eventos =
+            CALCULATE(COUNTROWS(Estudiantes),
+                      Estudiantes[tiempo] = tk, NOT ISBLANK(Estudiantes[tiempo]),
+                      Estudiantes[evento] = 1)
+        RETURN IF(enRiesgo > 0, 1 - DIVIDE(eventos, enRiesgo), 1)
+    )
+)
+ 
+Permanencia fin 3.er año = CALCULATE([Permanencia], Tiempos[t] = 4)
+ 
+Permanencia curva =
+VAR tt = SELECTEDVALUE(PuntosCurva[t])
+VAR perfilVacio =
+    ISINSCOPE(Estudiantes[perfil]) && ISBLANK(SELECTEDVALUE(Estudiantes[perfil]))
+RETURN
+IF(ISBLANK(tt) || perfilVacio, BLANK(), CALCULATE([Permanencia], Tiempos[t] = tt))
+ 
+Estudiantes total (tarjeta) = FORMAT([Estudiantes total], "#,0")
+Desertores 1.er año (tarjeta) = FORMAT([Desertores 1.er año], "#,0")
+Estudiantes modelo (tarjeta) = FORMAT([Estudiantes modelo], "#,0")
+Desertores modelo (tarjeta) = FORMAT([Desertores modelo], "#,0")
+
+Control: el tablero reproduce los valores del Capítulo IV. Por ejemplo, 1.987 ingresantes y 1.002 desertores en el primer año, y una permanencia al fin del tercer año del 67,0 % en total, del 69,7 % en la Sede Central y del 58,2 % en la Sede del interior.
+
